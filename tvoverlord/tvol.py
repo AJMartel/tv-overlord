@@ -26,7 +26,7 @@ from tvoverlord.remote import VersionCheck
 from tvoverlord.remote import Telemetry
 
 
-__version__ = '1.4.4'
+__version__ = '1.5.0'
 
 
 def edit_db(search_str):
@@ -78,7 +78,7 @@ def edit_db(search_str):
     click.echo()
 
     title = '%s' % row['name']
-    click.echo(tvu.style(title, bold=True))
+    click.echo(tvu.style(title, bold=True, ul=True))
     click.echo()
     try:
         msg = tvu.style('Search engine name (%s): ', fg=editcolor)
@@ -109,9 +109,30 @@ def edit_db(search_str):
         else:
             dirty = True
 
+        date_pretty = 'y' if row['search_by_date'] == 1 else 'n'
+        msg = tvu.style('Search by date (%s) [y/n]: ', fg=editcolor)
+        new_date = input(msg % (date_pretty))
+        if not new_date:
+            new_date = date_pretty
+        else:
+            dirty = True
+
+        new_format = row['date_format']
+        if new_date == 'y':
+            click.echo('  The optional date format string can be any valid Python format string.')
+            click.echo('  https://docs.python.org/3/library/datetime.html#strftime-and-strptime-behavior')
+            msg = tvu.style('  Date format string (%s): ', fg=editcolor)
+            new_format = input(msg % (row['date_format']))
+            if not new_format:
+                new_format = row['date_format']
+            else:
+                dirty = True
+
     except KeyboardInterrupt:
-        click.echo('\nDatabase edit canceled.')
+        click.echo('\n\nDatabase edit cancelled.')
         sys.exit(0)
+
+    click.echo()
 
     if dirty is False:
         click.echo('No changes made.')
@@ -129,27 +150,35 @@ def edit_db(search_str):
         click.echo('Error: Status must be either "active" or "inactive"')
         is_error = True
 
+    if new_date not in ['y', 'n']:
+        click.echo('Error: Search by date must be either "y" or "n"')
+        is_error = True
+
     if is_error:
         sys.exit(1)
 
-    click.echo()
-
     if not click.confirm('Are these changes correct? (you can always change it back)', default='Y'):
-        click.echo('Edits cancelled.')
+        click.echo('\nDatabase edit cancelled.')
         sys.exit()
 
     sql = '''UPDATE shows SET
                 season=:season,
                 episode=:episode,
                 status=:status,
-                search_engine_name=:search_engine_name
+                search_engine_name=:search_engine_name,
+                search_by_date=:search_by_date,
+                date_format=:date_format
              WHERE thetvdb_series_id=:tvdb_id'''
 
-    row_values = {'season': new_season,
-                  'episode': new_episode,
-                  'status': new_status,
-                  'search_engine_name': new_search_engine_name,
-                  'tvdb_id': row['thetvdb_series_id']}
+    row_values = {
+        'season': new_season,
+        'episode': new_episode,
+        'status': new_status,
+        'search_engine_name': new_search_engine_name,
+        'tvdb_id': row['thetvdb_series_id'],
+        'search_by_date': 1 if new_date == 'y' else 0,
+        'date_format': new_format,
+    }
 
     curs.execute(sql, row_values)
 
@@ -369,7 +398,13 @@ def list_missing(today):
               help="Ignore 'Not connected to vpn' warning.")
 @click.option('--count', '-c', type=int, default=10,
               help='Number of search results to list. (default: 5)')
-def download(show_name, today, ignore, count):
+@click.option('--exclude', '-x',
+              help='Comma seperated list of search engines to ignore.')
+@click.option('--filters', '-f',
+              help='Comma seperated list of strings to filter search results.  This will override config.ini.')
+@click.option('--timeout', type=click.FLOAT,
+              help='Set the timeout for non responding sites.')
+def download(show_name, today, ignore, count, exclude, filters, timeout):
     """Download available episodes.
 
     If SHOW_NAME is used, it will download any shows that match that title
@@ -382,6 +417,21 @@ def download(show_name, today, ignore, count):
                     parts_to_match=Config.parts_to_match):
                 if not L.message():
                     sys.exit(1)
+
+    if exclude:
+        blacklist = [
+            i.strip().lower() for i in exclude.split(',') if i.strip()]
+        Config.blacklist = list(set(Config.blacklist + blacklist))
+
+    if filters:
+        Config.filter_list = [
+            i.strip().lower() for i in filters.split(',') if i.strip()]
+
+    if timeout:
+        Config.timeout = timeout
+
+    # this is used in nzb searches
+    Config.nzbcount = count
 
     shows = Shows(name_filter=show_name)
     for show in shows:
@@ -425,7 +475,7 @@ def add(show_name, bulk, season, episode):
               help='Number of search results to list. (default: 5)')
 @click.option('--ignore', '-i', is_flag=True,
               help="Ignore 'Not connected to vpn' warning.")
-def nondbshow(search_string, count, ignore):
+def nondb(search_string, count, ignore):
     """Download anything, ignoring the database.
 
     This just does a simple search and passes you choise to the bittorrent
@@ -452,7 +502,7 @@ def nondbshow(search_string, count, ignore):
               type=click.Choice(['delete', 'deactivate', 'activate']),
               help='Preform actions on a show.')
 @click.argument('show_name')
-def editshow(show_name, action):
+def edit(show_name, action):
     """Edit the contents of the database.
 
     This allows you to change the fields in the database for a show.
@@ -540,10 +590,10 @@ def history(criteria, what_to_show):
     hist.show(what_to_show)
 
 
-@tvol.command(context_settings=CONTEXT_SETTINGS)
+@tvol.command('re-copy', context_settings=CONTEXT_SETTINGS)
 @click.argument('criteria', required=False)
 def copy(criteria):
-    """Re copy a show to the library location.
+    """Re-copy a show to the library location.
 
     CRITERIA can be days, a date or a show title.  If its days, it
     will show results from now to X days ago.  If it is a date, it
@@ -558,10 +608,10 @@ def copy(criteria):
     hist.copy()
 
 
-@tvol.command(context_settings=CONTEXT_SETTINGS)
+@tvol.command('re-download', context_settings=CONTEXT_SETTINGS)
 @click.argument('criteria', required=False)
 def redownload(criteria):
-    """Re download a show.
+    """Re-download a previous magnet link.
 
     CRITERIA can be days, a date or a show title.  If its days, it
     will show results from now to X days ago.  If it is a date, it
@@ -574,6 +624,31 @@ def redownload(criteria):
     criteria = parse_history(criteria)
     hist = History(criteria)
     hist.download()
+
+
+@tvol.command('re-search', context_settings=CONTEXT_SETTINGS)
+@click.argument('show-name', nargs=3)
+def research(show_name):
+    """Search again for a specific episode.
+
+    The command requires 3 arguments, SHOWNAME, SEASON, EPISODE:
+
+    eg. tvol re-search Grimm 1 10
+
+    Search for show, season, episode.  Using this won't change the
+    current season and episode numbers.  For example, if you are at
+    S04E09 of a show and want to go back and find a better version of
+    an episode you have already downloaded, you can use this and it
+    won't change the current S04E09 in the db.
+    """
+    send(te, v)
+    shows = list(Shows(show_name[0]))
+    if shows:
+        show = shows[0]
+        show.re_search(show.db_name, show_name[1], show_name[2])
+    else:
+        click.echo('Show not found, is it active?', err=True)
+
 
 
 @tvol.command(context_settings=CONTEXT_SETTINGS)
@@ -653,10 +728,15 @@ def config(edit, test_se, show, create_config_name):
     for engines in engines_types:
         for engine in engines:
             click.echo()
-            click.secho(engine.Provider.name, bold=True, nl=False)
-            click.echo(' (%s)' % engine.Provider.shortname)
-            for url in engine.Provider.provider_urls:
-                click.echo('  %s' % url)
+            click.secho(engine.name, bold=True, nl=False)
+            click.echo(' (%s)' % engine.shortname)
+            try:
+                for url in engine.provider_urls:
+                    click.echo('  %s' % url)
+            except AttributeError:
+                # there is no provider_urls.  Most likely an nzb
+                # search engine which only uses one url: engine.url.
+                click.echo('  %s' % engine.url)
 
     # blacklisted search engines
     if Config.blacklist:

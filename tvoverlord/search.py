@@ -10,7 +10,7 @@ import click
 
 from tvoverlord.config import Config
 from tvoverlord.util import U
-from tvoverlord.tvutil import style, sxxexx, format_paragraphs
+import tvoverlord.tvutil as tu
 
 from tvoverlord.search_providers import *
 
@@ -34,48 +34,74 @@ class Search(object):
             bitsnoop, extratorrent, thepiratebay_sx, btstorr_cc,
             onethreethreesevenx_to, rarbg_to, eztv_ag]
 
+        newsgroup_engines = [nzbclub_com.Provider()]
+
         # remove any providers listed in the blacklist
-        self.torrent_engines = [
-            i for i in torrent_engines if i.Provider.name not in Config.blacklist]
+        self.torrent_engines = []
+        for engine in torrent_engines:
+            inlist = True
+            if engine.Provider.shortname.lower() in Config.blacklist:
+                inlist = False
+            if engine.Provider.name.lower() in Config.blacklist:
+                inlist = False
+            if inlist:
+                self.torrent_engines.append(engine.Provider())
 
-        # for nzb searches, only the first one listed will be used
-        self.newsgroup_engines = [nzbclub_com]
+        self.newsgroup_engines = []
+        for engine in newsgroup_engines:
+            inlist = True
+            if engine.shortname.lower() in Config.blacklist:
+                inlist = False
+            if engine.name.lower() in Config.blacklist:
+                inlist = False
+            if inlist:
+                self.newsgroup_engines.append(engine)
 
-    def job(self, engine, search_string, season, episode):
-        search = engine.Provider()
-        search_results = search.search(search_string, season, episode)
+        for site in Config.nzbs:
+            self.newsgroup_engines.append(
+                nzb.Provider(site))
 
-        # for info about each search
-        # click.echo('%s -- %s' % (search.name, len(search_results)))
+    def job(self, engine, search_string, season, episode, date_search, idx=None):
+        search = engine
+        if date_search:
+            search_string = '%s %s' % (search_string, date_search)
+            season = episode = False
+
+        if self.search_type == 'torrent':
+            search_results = search.search(search_string, season, episode)
+        elif self.search_type == 'nzb':
+            search_results = search.search(search_string, season, episode, idx)
+
         self.se_order.append(search.name)
         return search_results + [search.name]
 
     def test_each(self, search_string, show_results):
+        """Do a test search for each search engine"""
         engines = self.torrent_engines + self.newsgroup_engines
         indent = '  '
         click.echo()
         click.echo('Searching for: %s' % search_string)
         for engine in engines:
-            search = engine.Provider()
+            search = engine
             name = '%s (%s)' % (search.name, search.shortname)
-            click.echo(style(name, bold=True))
+            click.echo(tu.style(name, bold=True))
 
             results = search.search(search_string)
 
-            click.echo(indent + style(search.url, fg='blue', ul=True))
+            click.echo(indent + tu.style(search.url, fg='blue', ul=True))
             results_count = str(len(results))
             if results_count == '0':
-                results_count = style(results_count, fg='red')
+                results_count = tu.style(results_count, fg='red')
             else:
-                results_count = style(results_count, fg='green')
+                results_count = tu.style(results_count, fg='green')
             click.echo(indent + 'Search results: %s' % results_count)
 
             if show_results:
                 for result in results:
                     click.echo('%s* %s' % (indent, result[0]))
 
-    def search(self, search_string, season=False,
-               episode=False, search_type='torrent'):
+    def search(self, search_string, season=False, episode=False,
+               date_search=None, search_type='torrent'):
         """
         Return an array of values:
 
@@ -111,7 +137,7 @@ class Search(object):
             header = [
                 [search_string, ''],
                 ['Name', 'Size', 'Date', 'SE'],
-                [0, 10, 12, 2],
+                [0, 10, 12, 3],
                 ['<', '>', '<', '<']]
 
         if self.search_type == 'torrent':
@@ -121,48 +147,74 @@ class Search(object):
         else:
             raise ValueError('search_type can only be "torrent" or "nzb"')
 
-        # socket.setdefaulttimeout(3.05)
-        socket.setdefaulttimeout(1)
+        socket.setdefaulttimeout(Config.timeout)
         episodes = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            # For nzb's, the idx is needed so Provider.download knows
+            # which engine was used.  It's not needed for torrents
+            # because there is no download method.
             res = {
                 executor.submit(
-                    self.job, engine, search_string, season, episode
-                ): engine for engine in engines
+                    self.job, engine, search_string, season, episode, date_search, idx
+                ): engine for idx, engine in enumerate(engines)
             }
-            with click.progressbar(
-                    concurrent.futures.as_completed(res),
-                    label=U.style('  %s' % search_string, bold=True),
-                    empty_char=style(Config.pb.empty_char,
-                                     fg=Config.pb.dark,
-                                     bg=Config.pb.dark),
-                    fill_char=style(Config.pb.fill_char,
-                                    fg=Config.pb.light,
-                                    bg=Config.pb.light),
-                    length=len(engines),
-                    show_percent=False,
-                    show_eta=False,
-                    item_show_func=self.progress_title,
-                    width=Config.pb.width,
-                    bar_template=Config.pb.template,
-                    show_pos=True,
-            ) as bar:
-                for future in bar:
-                    results = future.result()
-                    # remove the search engine name from the end of
-                    # the results array that was added in self.job()
-                    # so progress_title() could make use of it.
-                    results = results[:-1]
-                    episodes = episodes + results
+
+            names = [i.name for i in engines]
+            names.sort()
+            names = [' %s ' % i for i in names]
+            names = [tu.style(i, fg='white', bg='red') for i in names]
+            for future in concurrent.futures.as_completed(res):
+
+                results = future.result()
+                finished_name = results[-1]
+                for i, e in enumerate(names):
+                    e = click.unstyle(e).strip()
+                    if e == finished_name:
+                        e = ' %s ' % e
+                        names[i] = tu.style(e, fg='white', bg='green')
+
+                if date_search:
+                    title = '%s %s' % (search_string.strip(),
+                                       date_search)
+                else:
+                    title = '%s %s' % (search_string.strip(),
+                                       tu.sxxexx(season, episode))
+                title = title.ljust(Config.console_columns)
+                click.echo(tu.style(title, bold=True))
+                click.echo(' '.join(names))
+                # move up two lines
+                click.echo('[%sA' % 3)
+
+                if self.search_type == 'torrent':
+                    episodes = episodes + results[:-1]
+                elif self.search_type == 'nzb':
+                    # episodes = episodes + results[:-1]
+                    if episodes:
+                        episodes.append(results[:-1])
 
         # go up 3 lines to remove the progress bar
-        click.echo('[%sA' % 3)
+        click.echo('[%sA' % 2)
 
         if self.search_type == 'torrent':
             self.sort_torrents(episodes)
+        else:
+            pp(episodes)
+            exit()
 
+        if Config.filter_list:
+            episodes = [i for i in episodes if self.filter_episode(i)]
+
+        self.episodes = episodes
         # return search_results
         return [header] + [episodes]
+
+    def filter_episode(self, episode):
+        bad = False
+        for f in Config.filter_list:
+            if f.lower() in episode[0].lower():
+                bad = True
+        if not bad:
+            return episode
 
     def sort_torrents(self, episodes):
         # sort by seeds
@@ -197,13 +249,17 @@ class Search(object):
             else:
                 hashes.append(torrent_hash)
 
-    def magnet_filename(self):
-        se_ep = sxxexx(self.season, self.episode)
+    def magnet_filename(self, chosen_show=None):
+        se_ep = tu.sxxexx(self.season, self.episode)
         if se_ep:
             fullname = '%s %s.magnet' % (self.show_name, se_ep)
+            fullname = fullname.replace(' ', '_')
         else:
-            fullname = '%s.magnet' % (self.show_name)
-        fullname = fullname.replace(' ', '_')
+            show_fname = self.show_name
+            for f in self.episodes:
+                if chosen_show == f[5]:
+                    show_fname = tu.clean_filename(f[0], strict=True)
+            fullname = '%s.magnet' % (show_fname)
         return fullname
 
     def config_command(self, chosen_show):
@@ -219,14 +275,13 @@ class Search(object):
         download method and return the name of the file downloaded
         back to get-nzb.v2.py
         """
-
         downloaded_filename = ''
         if chosen_show.startswith("magnet:"):
 
             # write magnet links to a file
             if Config.magnet_dir:
                 Config.magnet_dir = os.path.expanduser(Config.magnet_dir)
-                fn = self.magnet_filename()
+                fn = self.magnet_filename(chosen_show)
                 if os.path.isdir(Config.magnet_dir):
                     full = os.path.join(Config.magnet_dir, fn)
                     with open(full, 'w') as f:
@@ -243,7 +298,7 @@ class Search(object):
                     sys.exit('\n"%s" not found.' % args[0])
 
             elif platform.system() == 'Linux':
-                err_msg = format_paragraphs('''
+                err_msg = tu.format_paragraphs('''
                     You do not have a default handler for magnet
                     links.  Either install a bittorent client or
                     configure the "magnet folder" or "client"
@@ -276,19 +331,17 @@ class Search(object):
 
         else:  # is a nzb file
             final_name = ''
-            # only cleans name for tv show downloads
-            if self.season and self.episode:
-                final_name = '%s.%s.nzb' % (
-                    self.show_name.replace(' ', '.'),
-                    "S%sE%s" % (self.season.rjust(2, '0'),
-                                self.episode.rjust(2, '0'))
-                )
-            else:
-                final_name = '%s.nzb' % (self.show_name)
 
-            downloader = self.newsgroup_engines[0].Provider()
+            show_fname = 'unknown'
+            for f in self.episodes:
+                if chosen_show == f[4]:
+                    show_fname = tu.clean_filename(f[0], strict=True)
+            final_name = '%s.nzb' % (show_fname)
+
+            idx, guid = chosen_show.split('|')
+            downloader = self.newsgroup_engines[int(idx)]
             downloaded_filename = downloader.download(
-                chosen_show, destination, final_name)
+                guid, destination, final_name)
 
         return downloaded_filename
 
@@ -296,7 +349,6 @@ class Search(object):
         """Display the search engine name on the right side of the progressbar"""
         try:
             engine_name = future.result()[-1]
-            # print('\n%s' % engine_name)
             engine_name += ' done'
             self.last_engine = engine_name
             return engine_name

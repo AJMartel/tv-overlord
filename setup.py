@@ -55,7 +55,7 @@ setup(
     #     'colorama',
     # ] if 'Windows' == platform.system() else []),
     install_requires=[
-        'tvdb_api',
+        'tvdb_api>=2.0',
         'beautifulsoup4',
         'feedparser',
         'requests',
@@ -84,7 +84,7 @@ setup(
         'Topic :: Internet',
         'Topic :: Multimedia :: Video',
         'Natural Language :: English',
-        'Development Status :: 4 - Beta',
+        'Development Status :: 5 - Production/Stable',
     ],
 )
 

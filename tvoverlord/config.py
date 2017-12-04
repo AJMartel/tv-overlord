@@ -325,6 +325,8 @@ class Configuration:
                     ['alt_series_id', 'TEXT'],
                     ['season', 'NUMERIC'],
                     ['episode', 'NUMERIC'],
+                    ['search_by_date', 'INTEGER'],
+                    ['date_format', 'TEXT'],
                     ['next_episode', 'TEXT'],
                     ['airs_time', 'TEXT'],
                     ['airs_dayofweek', 'TEXT'],
@@ -389,7 +391,12 @@ class Configuration:
 
         cfg = configparser.ConfigParser(
             allow_no_value=True, interpolation=None)
-        cfg.read(str(self.cb.user_config))
+        try:
+            cfg.read(str(self.cb.user_config))
+        except configparser.DuplicateSectionError as e:
+            click.echo(e, err=True)
+            click.echo('Section names in config file must all be unique.', err=True)
+            sys.exit(1)
 
         # Settings from config.ini ---------------------------------
         try:
@@ -435,7 +442,7 @@ class Configuration:
             blacklist = cfg.get('App Settings', 'blacklist')
             # split, strip, and remove empty values from list
             self.blacklist = [
-                i.strip() for i in blacklist.split(',') if i.strip()]
+                i.strip().lower() for i in blacklist.split(',') if i.strip()]
         except configparser.NoOptionError:
             self.blacklist = []
 
@@ -453,6 +460,21 @@ class Configuration:
         except configparser.NoOptionError:
             self.telemetry_ok = None
 
+        try:
+            filter_list = cfg.get('App Settings', 'filters')
+            self.filter_list = [
+                i.strip().lower() for i in filter_list.split(',') if i.strip()]
+        except configparser.NoOptionError:
+            self.filter_list = []
+
+        default_timeout = 10
+        try:
+            self.timeout = float(cfg.get('App Settings', 'timeout'))
+        except configparser.NoOptionError:
+            self.timeout = default_timeout
+        if not self.timeout:
+            self.timeout = default_timeout
+
         # [File Locations]
         try:
             self.tv_dir = os.path.expanduser(
@@ -464,6 +486,19 @@ class Configuration:
                 cfg.get('File Locations', 'staging'))
         except configparser.NoOptionError:
             self.staging = None
+
+        # [Newznab]
+        try:
+            newznab = dict(cfg['Newznab'])
+            self.newznab = {
+                k: [i.strip() for i in v.split(',')]
+                for k, v in newznab.items()}
+        except KeyError:
+            self.newznab = {}
+
+        # [nzb]
+        self.nzbs = [
+            dict(v) for k, v in cfg.items() if k.lower().startswith('nzb:')]
 
 
 Config = Configuration()
